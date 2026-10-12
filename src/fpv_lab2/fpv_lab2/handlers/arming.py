@@ -1,3 +1,4 @@
+import time
 from functools import partial
 from typing import TYPE_CHECKING
 from ardupilot_msgs.srv import ArmMotors
@@ -10,11 +11,15 @@ if TYPE_CHECKING:
 class ArmingHandler(FlightStateHandler):
     def __init__(self):
         self.arm_attempts = 0
-        self.max_attempts = 30
+        self.max_attempts = 80
+        self.last_attempt_time = 0.0
 
     def handle(self, node: "FlightTestNode") -> None:
         if not node.request_in_progress:
-            self.call_arm(node)
+            now = time.monotonic()
+            if now - self.last_attempt_time >= 0.5:
+                self.last_attempt_time = now
+                self.call_arm(node)
 
     def call_arm(self, node: "FlightTestNode") -> None:
         node.request_in_progress = True
@@ -22,7 +27,8 @@ class ArmingHandler(FlightStateHandler):
         request.arm = True
         future = node.arm_client.call_async(request)
         future.add_done_callback(partial(self.arm_callback, node))
-        node.get_logger().info("Requesting motor arming")
+        if self.arm_attempts == 0:
+            node.get_logger().info("Requesting motor arming")
 
     def arm_callback(self, node: "FlightTestNode", future) -> None:
         node.request_in_progress = False
@@ -35,9 +41,10 @@ class ArmingHandler(FlightStateHandler):
         if not response.result:
             self.arm_attempts += 1
             if self.arm_attempts < self.max_attempts:
-                node.get_logger().info(
-                    f"Arming rejected (waiting for EKF position estimate, attempt {self.arm_attempts}/{self.max_attempts})..."
-                )
+                if self.arm_attempts % 4 == 0 or self.arm_attempts == 1:
+                    node.get_logger().info(
+                        f"Arming rejected (waiting for EKF position estimate)..."
+                    )
                 return
             node.fail("Ardupilot rejected the arming request")
             return
